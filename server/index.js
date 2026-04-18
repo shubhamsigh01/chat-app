@@ -1,61 +1,135 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
+const Message = require('./models/Message');
+const Room = require('./models/Room');
+const authRoutes = require('./routes/auth');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
+
+// 🟢 Connect to MongoDB
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log('Connected to MongoDB Atlas'))
+  .catch(err => console.error('MongoDB connection error:', err));
+
+// 🟢 REST API Routes
+app.use('/auth', authRoutes);
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "http://localhost:5173", methods: ["GET", "POST"] }
 });
 
-// In-memory store
-const rooms = {};        // { roomName: [{ id, username, text, time }] }
-const onlineUsers = {};  // { socketId: username }
+// 🟢 Socket Middleware for JWT Validation
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+  if (!token) return next(new Error('Authentication error: Token missing'));
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return next(new Error('Authentication error: Invalid token'));
+    socket.user = decoded; // Attach user data to socket
+    next();
+  });
+});
+
+const onlineUsers = {}; // { socketId: username }
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log('User connected authenticated:', socket.user.username);
 
-  // 1️⃣ User joins a room
-  socket.on('join_room', ({ room, username }) => {
+  socket.on('join_room', async ({ room }) => {
+    const username = socket.user.username; // Use verified username from token
     socket.join(room);
     onlineUsers[socket.id] = username;
-    if (!rooms[room]) rooms[room] = [];
 
-    // Send message history to the joining user
-    socket.emit('message_history', rooms[room]);
+    await Room.findOneAndUpdate({ name: room }, { name: room }, { upsert: true });
 
-    // Notify others
+    const history = await Message.find({ room }).sort({ _id: -1 }).limit(50);
+    socket.emit('message_history', history.reverse());
+
     socket.to(room).emit('user_joined', { username });
-
-    // Broadcast updated online list
     io.to(room).emit('online_users', getOnlineUsers(room));
   });
 
-  // 2️⃣ User sends a message
-  socket.on('send_message', ({ room, username, text }) => {
-    const message = { username, text, time: new Date().toISOString() };
-    rooms[room].push(message);
-    io.to(room).emit('receive_message', message); // send to ALL in room
+  socket.on('send_message', async ({ room, text }) => {
+    const username = socket.user.username;
+    const messageData = { 
+      messageId: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+      room, username, text, time: new Date().toISOString(), reactions: {}
+    };
+
+    const newMessage = new Message(messageData);
+    await newMessage.save();
+    io.to(room).emit('receive_message', messageData);
   });
 
-  // 3️⃣ User disconnects
-  socket.on('disconnect', () => {
+  socket.on('private_message', ({ to, text }) => {
+    const from = socket.user.username;
+    const message = { from, text, time: new Date().toISOString() };
+    io.to(to).emit('receive_private_message', { ...message, fromId: socket.id });
+  });
+
+  socket.on('react_message', async ({ room, messageId, emoji }) => {
+    const username = socket.user.username;
+    const message = await Message.findOne({ messageId });
+    if (message) {
+      if (!message.reactions[emoji]) message.reactions[emoji] = [];
+      const userIndex = message.reactions[emoji].indexOf(username);
+      if (userIndex === -1) {
+        message.reactions[emoji].push(username);
+      } else {
+        message.reactions[emoji].splice(userIndex, 1);
+        if (message.reactions[emoji].length === 0) {
+          const newReactions = { ...message.reactions };
+          delete newReactions[emoji];
+          message.reactions = newReactions;
+        }
+      }
+      message.markModified('reactions');
+      await message.save();
+      io.to(room).emit('message_reaction_update', { messageId, reactions: message.reactions });
+    }
+  });
+
+  socket.on('typing', ({ room }) => {
+    socket.to(room).emit('user_typing', { username: socket.user.username });
+  });
+
+  socket.on('stop_typing', ({ room }) => {
+    socket.to(room).emit('user_stop_typing', { username: socket.user.username });
+  });
+
+  socket.on('disconnecting', () => {
     const username = onlineUsers[socket.id];
-    delete onlineUsers[socket.id];
-    // Notify all rooms this socket was in
     socket.rooms.forEach(room => {
-      io.to(room).emit('user_left', { username });
-      io.to(room).emit('online_users', getOnlineUsers(room));
+      if (room !== socket.id) {
+        io.to(room).emit('user_left', { username });
+        io.to(room).emit('user_stop_typing', { username });
+        const socketsInRoom = io.sockets.adapter.rooms.get(room) || new Set();
+        const users = [...socketsInRoom]
+          .filter(id => id !== socket.id)
+          .map(id => ({ id, username: onlineUsers[id] }))
+          .filter(u => u.username);
+        io.to(room).emit('online_users', users);
+      }
     });
+  });
+
+  socket.on('disconnect', () => {
+    delete onlineUsers[socket.id];
   });
 });
 
 function getOnlineUsers(room) {
   const socketsInRoom = io.sockets.adapter.rooms.get(room) || new Set();
-  return [...socketsInRoom].map(id => onlineUsers[id]).filter(Boolean);
+  return [...socketsInRoom].map(id => ({ id, username: onlineUsers[id] })).filter(u => u.username);
 }
 
-server.listen(3001, () => console.log('Server running on port 3001'));
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
