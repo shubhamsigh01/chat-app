@@ -8,7 +8,8 @@ const jwt = require('jsonwebtoken');
 const Message = require('./models/Message');
 const Room = require('./models/Room');
 const authRoutes = require('./routes/auth');
-
+const aiRoutes = require('./routes/ai');
+const { getBotReply } = require('./utils/aiBot');
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -20,6 +21,7 @@ mongoose.connect(process.env.MONGODB_URI)
 
 // 🟢 REST API Routes
 app.use('/auth', authRoutes);
+app.use('/api/ai', aiRoutes);
 
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -67,6 +69,30 @@ io.on('connection', (socket) => {
     const newMessage = new Message(messageData);
     await newMessage.save();
     io.to(room).emit('receive_message', messageData);
+
+    // AI bot intercept
+    if (text.trim().toLowerCase().startsWith('@bot')) {
+      const question = text.trim().substring(4).trim();
+      if (question) {
+        // Get last 5 messages for context
+        const history = await Message.find({ room }).sort({ _id: -1 }).limit(5);
+        const context = history.reverse().map(m => `${m.username}: ${m.text}`);
+        
+        const botReply = await getBotReply(question, context);
+        
+        const botMessageData = {
+          messageId: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+          room,
+          username: "Orbit AI",
+          text: botReply,
+          time: new Date().toISOString(),
+          reactions: {},
+          isBot: true
+        };
+        
+        io.to(room).emit('receive_message', botMessageData);
+      }
+    }
   });
 
   socket.on('private_message', ({ to, text }) => {

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 import Login from './Login';
-
+import SmartReply from './components/SmartReply';
+import SummaryModal from './components/SummaryModal';
 let socket; // Initialize socket outside so we can reconnect with token
 
 export default function App() {
@@ -19,6 +20,7 @@ export default function App() {
   const [dmInput, setDmInput] = useState('');
   const [notifications, setNotifications] = useState({});
   const [hoveredMessage, setHoveredMessage] = useState(null);
+  const [showSummary, setShowSummary] = useState(false);
   const emojis = ['👍', '❤️', '😂', '😮'];
 
   const bottomRef = useRef(null);
@@ -156,20 +158,30 @@ export default function App() {
     </div>
   );
 
+  const last10Messages = messages.filter(m => !m.system).slice(-10).map(m => `${m.username}: ${m.text}`);
+  const last50Messages = messages.filter(m => !m.system).slice(-50).map(m => ({ sender: m.username, text: m.text }));
+
   return (
     <div style={{ display: 'flex', padding: 20, gap: 20 }}>
+      {showSummary && <SummaryModal messages={last50Messages} onClose={() => setShowSummary(false)} />}
       <div style={{ flex: 2 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3>Room: {room}</h3>
-          <button onClick={() => setJoined(false)}>Change Room</button>
+          <div>
+            <button onClick={() => setShowSummary(true)} style={{ marginRight: 10 }}>Summarize</button>
+            <button onClick={() => setJoined(false)}>Change Room</button>
+          </div>
         </div>
         <div style={{ height: 400, overflowY: 'auto', border: '1px solid #ccc', padding: 10, marginBottom: 10 }}>
           {messages.map((msg, i) =>
             msg.system
               ? <p key={i} style={{ color: 'gray', fontStyle: 'italic' }}>{msg.text}</p>
               : (
-                <div key={msg.messageId || i} onMouseEnter={() => setHoveredMessage(msg.messageId)} onMouseLeave={() => setHoveredMessage(null)} style={{ position: 'relative', padding: '5px 0' }}>
-                  <p style={{ margin: 0 }}><strong>{msg.username}</strong>: {msg.text}</p>
+                <div key={msg.messageId || i} onMouseEnter={() => setHoveredMessage(msg.messageId)} onMouseLeave={() => setHoveredMessage(null)} style={{ position: 'relative', padding: '5px 8px', borderRadius: '4px', backgroundColor: msg.isBot ? '#eef2ff' : 'transparent', marginBottom: '4px' }}>
+                  <p style={{ margin: 0 }}>
+                    {msg.isBot && <span style={{ color: '#4f46e5', marginRight: '4px' }}>✦</span>}
+                    <strong style={{ color: msg.isBot ? '#4f46e5' : 'inherit' }}>{msg.username}</strong>: {msg.text}
+                  </p>
                   {hoveredMessage === msg.messageId && (
                     <div style={{ position: 'absolute', top: -20, left: 50, background: 'white', border: '1px solid #ccc', borderRadius: 20, padding: '2px 8px', display: 'flex', gap: 5, zIndex: 10 }}>
                       {emojis.map(emoji => (
@@ -190,8 +202,10 @@ export default function App() {
           <div ref={bottomRef} />
         </div>
         <div style={{ height: 20 }}>{typingUsers.length > 0 && <p style={{ fontSize: '0.8rem', fontStyle: 'italic' }}>{typingUsers.join(', ')} typing...</p>}</div>
+        <SmartReply recentMessages={last10Messages} onSelect={(s) => setInput(s)} />
         <input value={input} onChange={handleInputChange} onKeyDown={e => e.key === 'Enter' && sendMessage()} placeholder="Group message..." style={{ padding: 8, width: '70%' }} />
         <button onClick={sendMessage}>Send</button>
+        <p style={{ fontSize: '0.75rem', color: '#6b7280', margin: '4px 0 0 0' }}>Tip: type @bot followed by your question to ask AI</p>
       </div>
 
       <div style={{ flex: 1, borderLeft: '1px solid #eee', paddingLeft: 20 }}>
