@@ -24,7 +24,8 @@ export default function SummaryModal({ messages, onClose }) {
       setSummary("");
 
       try {
-        const res = await fetch("/api/ai/summarize", {
+        const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
+        const res = await fetch(`${BACKEND_URL}/api/ai/summarize`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ messages }),
