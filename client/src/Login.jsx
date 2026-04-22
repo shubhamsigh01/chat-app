@@ -18,8 +18,14 @@ export default function Login({ onAuthSuccess }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       });
+      
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("Server returned a non-JSON response. Ensure the backend is running on the correct port.");
+      }
+
       const data = await res.json();
-      if (!res.ok) throw new Error(data.message);
+      if (!res.ok) throw new Error(data.message || "Auth failed");
       
       localStorage.setItem('chat_token', data.token);
       localStorage.setItem('chat_username', data.username);
