@@ -12,7 +12,7 @@ export default function Login({ onAuthSuccess }) {
     const endpoint = isLogin ? '/login' : '/register';
     
     try {
-      const res = await fetch(`http://localhost:3001/auth${endpoint}`, {
+      const res = await fetch(`/auth${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
@@ -29,17 +29,35 @@ export default function Login({ onAuthSuccess }) {
   };
 
   return (
-    <div style={{ padding: 40, maxWidth: 400, margin: 'auto' }}>
-      <h2>{isLogin ? 'Login' : 'Register'}</h2>
-      {error && <p style={{ color: 'red' }}>{error}</p>}
-      <form onSubmit={handleSubmit}>
-        <input placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} style={{ display: 'block', width: '100%', padding: 10, marginBottom: 10 }} required />
-        <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} style={{ display: 'block', width: '100%', padding: 10, marginBottom: 10 }} required />
-        <button type="submit" style={{ width: '100%', padding: 10, background: '#007bff', color: 'white', border: 'none' }}>{isLogin ? 'Login' : 'Register'}</button>
-      </form>
-      <p onClick={() => setIsLogin(!isLogin)} style={{ cursor: 'pointer', color: 'blue', marginTop: 10 }}>
-        {isLogin ? "Don't have an account? Register" : "Already have an account? Login"}
-      </p>
+    <div className="App">
+      <div className="joinChatContainer" style={{ maxWidth: 450 }}>
+        <h3>{isLogin ? 'Orbit Login' : 'Orbit Register'}</h3>
+        {error && <p style={{ color: '#ef4444', fontSize: '0.85rem', marginBottom: '1rem' }}>{error}</p>}
+        <form onSubmit={handleSubmit} style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <input 
+            placeholder="Username" 
+            value={username} 
+            onChange={e => setUsername(e.target.value)} 
+            required 
+          />
+          <input 
+            type="password" 
+            placeholder="Password" 
+            value={password} 
+            onChange={e => setPassword(e.target.value)} 
+            required 
+          />
+          <button type="submit">{isLogin ? 'Login' : 'Register'}</button>
+        </form>
+        <p 
+          onClick={() => setIsLogin(!isLogin)} 
+          style={{ cursor: 'pointer', color: 'var(--text-muted)', marginTop: 15, fontSize: '0.9rem' }}
+          onMouseOver={e => e.target.style.color = 'var(--primary)'}
+          onMouseOut={e => e.target.style.color = 'var(--text-muted)'}
+        >
+          {isLogin ? "Don't have an account? Register" : "Already have an account? Login"}
+        </p>
+      </div>
     </div>
   );
 }

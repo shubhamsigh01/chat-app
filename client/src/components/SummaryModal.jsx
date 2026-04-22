@@ -7,6 +7,7 @@ import React, { useState, useEffect } from 'react';
 export default function SummaryModal({ messages, onClose }) {
   const [summary, setSummary] = useState('');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     // Handle Escape key to close modal
@@ -18,6 +19,8 @@ export default function SummaryModal({ messages, onClose }) {
     document.addEventListener('keydown', handleKeyDown);
 
     const fetchSummary = async () => {
+      setLoading(true);
+      setError(null);
       try {
         const response = await fetch('/api/ai/summarize', {
           method: 'POST',
@@ -25,13 +28,16 @@ export default function SummaryModal({ messages, onClose }) {
           body: JSON.stringify({ messages })
         });
         
-        if (!response.ok) throw new Error('Network response was not ok');
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || 'Summarization failed');
+        }
         
         const data = await response.json();
         setSummary(data.summary || 'Could not generate summary.');
-      } catch (error) {
-        console.error('Error fetching summary:', error);
-        setSummary('An error occurred while generating the summary.');
+      } catch (err) {
+        console.error('Error fetching summary:', err);
+        setError(err.message);
       } finally {
         setLoading(false);
       }
@@ -57,7 +63,8 @@ export default function SummaryModal({ messages, onClose }) {
       style={{
         position: 'fixed',
         top: 0, left: 0, right: 0, bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        backdropFilter: 'blur(4px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -66,13 +73,14 @@ export default function SummaryModal({ messages, onClose }) {
     >
       <div 
         style={{
-          backgroundColor: '#fff',
-          color: '#333',
-          padding: '24px',
-          borderRadius: '8px',
+          backgroundColor: 'var(--bg-card)',
+          color: 'var(--text-main)',
+          padding: '32px',
+          borderRadius: '24px',
           maxWidth: '500px',
           width: '90%',
-          boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+          border: '1px solid var(--glass-border)',
           position: 'relative'
         }}
       >
@@ -93,7 +101,7 @@ export default function SummaryModal({ messages, onClose }) {
           &times;
         </button>
         
-        <h2 style={{ marginTop: 0, marginBottom: '16px', fontSize: '1.5rem' }}>Room Summary</h2>
+        <h2 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.75rem', fontWeight: 700, background: 'linear-gradient(to right, #818cf8, #c084fc)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Room Summary</h2>
         
         {loading ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100px' }}>
@@ -106,8 +114,19 @@ export default function SummaryModal({ messages, onClose }) {
               animation: 'spin 1s linear infinite'
             }}></div>
           </div>
+        ) : error ? (
+          <div style={{ 
+            color: '#ef4444', 
+            background: 'rgba(239, 68, 68, 0.1)', 
+            padding: '16px', 
+            borderRadius: '12px', 
+            border: '1px solid rgba(239, 68, 68, 0.2)',
+            fontSize: '0.95rem'
+          }}>
+            {error}
+          </div>
         ) : (
-          <div style={{ lineHeight: '1.6', fontSize: '1rem' }}>
+          <div style={{ lineHeight: '1.6', fontSize: '1.05rem', color: 'var(--text-main)', opacity: 0.9 }}>
             {summary}
           </div>
         )}

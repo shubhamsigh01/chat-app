@@ -5,7 +5,7 @@ export const useSocket = () => {
     const socketRef = useRef(null);
 
     if (!socketRef.current) {
-        socketRef.current = io('http://localhost:3001');
+        socketRef.current = io('/');
     }
 
     useEffect(() => {

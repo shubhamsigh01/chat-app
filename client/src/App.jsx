@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
-import { io } from 'socket.io-client';
 import Login from './Login';
 import SmartReply from './components/SmartReply';
 import SummaryModal from './components/SummaryModal';
-let socket; // Initialize socket outside so we can reconnect with token
+import DMPanel from './components/DMPanel';
+import { useCrypto } from './context/CryptoContext';
+import socket from './socket';
 
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('chat_token'));
@@ -17,23 +18,21 @@ export default function App() {
   
   const [privateChats, setPrivateChats] = useState({});
   const [selectedUser, setSelectedUser] = useState(null);
-  const [dmInput, setDmInput] = useState('');
   const [notifications, setNotifications] = useState({});
   const [hoveredMessage, setHoveredMessage] = useState(null);
   const [showSummary, setShowSummary] = useState(false);
+  const { sharedKeys, openSecureSession } = useCrypto();
   const emojis = ['👍', '❤️', '😂', '😮'];
 
   const bottomRef = useRef(null);
-  const dmBottomRef = useRef(null);
   const typingTimeoutRef = useRef(null);
 
   useEffect(() => {
     if (!token) return;
 
     // 🟢 Connect to socket with JWT token
-    socket = io('http://localhost:3001', {
-      auth: { token }
-    });
+    socket.auth = { token };
+    socket.connect();
 
     socket.on('connect', () => console.log('✅ Connected:', socket.id));
     socket.on('connect_error', (err) => {
@@ -61,10 +60,26 @@ export default function App() {
       setTypingUsers(prev => prev.filter(user => user !== username));
     });
 
-    socket.on('receive_private_message', ({ from, text, time, fromId }) => {
+    socket.on('receive_private_message', async ({ from, text, time, fromId, iv, ciphertext }) => {
+      let plaintext = text;
+      if (iv && ciphertext) {
+        try {
+          // If we don't have the key yet, we might need to request it
+          // but for background messages, we'll just try to use what's cached.
+          if (sharedKeys.current[fromId]) {
+            const { decryptMessage } = await import('./utils/crypto');
+            plaintext = await decryptMessage(sharedKeys.current[fromId], { iv, ciphertext });
+          } else {
+            plaintext = "[Encrypted message]";
+          }
+        } catch (err) {
+          plaintext = "[Could not decrypt]";
+        }
+      }
+
       setPrivateChats(prev => ({
         ...prev,
-        [fromId]: [...(prev[fromId] || []), { from, text, time }]
+        [fromId]: [...(prev[fromId] || []), { from, text: plaintext, time }]
       }));
       if (!selectedUser || selectedUser.id !== fromId) {
         setNotifications(prev => ({ ...prev, [fromId]: (prev[fromId] || 0) + 1 }));
@@ -78,15 +93,11 @@ export default function App() {
     });
 
     return () => socket.disconnect();
-  }, [token, selectedUser]);
+  }, [token]); // Removed selectedUser to prevent disconnect on DM open
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, typingUsers]);
-
-  useEffect(() => {
-    dmBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [privateChats, selectedUser]);
 
   const handleAuthSuccess = (token, user) => {
     setToken(token);
@@ -125,17 +136,6 @@ export default function App() {
     }
   };
 
-  const sendPrivateMessage = () => {
-    if (dmInput.trim() && selectedUser) {
-      socket.emit('private_message', { to: selectedUser.id, text: dmInput });
-      setPrivateChats(prev => ({
-        ...prev,
-        [selectedUser.id]: [...(prev[selectedUser.id] || []), { from: username, text: dmInput, time: new Date().toISOString() }]
-      }));
-      setDmInput('');
-    }
-  };
-
   const openPrivateChat = (user) => {
     if (user.id === socket.id) return;
     setSelectedUser(user);
@@ -150,11 +150,18 @@ export default function App() {
   if (!token) return <Login onAuthSuccess={handleAuthSuccess} />;
 
   if (!joined) return (
-    <div style={{ padding: 40 }}>
-      <h2>Welcome, {username}!</h2>
-      <button onClick={handleLogout} style={{ marginBottom: 20 }}>Logout</button>
-      <input placeholder="Room name (e.g. general)" value={room} onChange={e => setRoom(e.target.value)} onKeyDown={e => e.key === 'Enter' && joinRoom()} style={{ display: 'block', marginBottom: 10, padding: 8 }} />
-      <button onClick={joinRoom}>Join Room</button>
+    <div className="App">
+      <div className="joinChatContainer">
+        <h3>Welcome, {username}!</h3>
+        <input 
+          placeholder="Room name (e.g. general)" 
+          value={room} 
+          onChange={e => setRoom(e.target.value)} 
+          onKeyDown={e => e.key === 'Enter' && joinRoom()} 
+        />
+        <button onClick={joinRoom}>Join Room</button>
+        <button onClick={handleLogout} style={{ marginTop: '10px', background: 'transparent', border: '1px solid var(--glass-border)', fontSize: '0.9rem' }}>Logout</button>
+      </div>
     </div>
   );
 
@@ -162,77 +169,126 @@ export default function App() {
   const last50Messages = messages.filter(m => !m.system).slice(-50).map(m => ({ sender: m.username, text: m.text }));
 
   return (
-    <div style={{ display: 'flex', padding: 20, gap: 20 }}>
+    <div className="App" style={{ height: '100vh', padding: '20px' }}>
       {showSummary && <SummaryModal messages={last50Messages} onClose={() => setShowSummary(false)} />}
-      <div style={{ flex: 2 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <h3>Room: {room}</h3>
-          <div>
-            <button onClick={() => setShowSummary(true)} style={{ marginRight: 10 }}>Summarize</button>
-            <button onClick={() => setJoined(false)}>Change Room</button>
+      
+      <div className="chat-window" style={{ width: '100%', maxWidth: '1000px', height: '80vh', display: 'flex', flexDirection: 'row' }}>
+        {/* Main Chat Area */}
+        <div style={{ flex: 2, display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--glass-border)' }}>
+          <div className="chat-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <p>Room: {room}</p>
+            <div>
+              <button className="chat-header-btn" onClick={() => setShowSummary(true)} style={{ marginRight: 10, padding: '5px 10px', borderRadius: '8px', background: 'var(--glass)', color: 'white', border: '1px solid var(--glass-border)', cursor: 'pointer' }}>Summarize</button>
+              <button className="chat-header-btn" onClick={() => setJoined(false)} style={{ padding: '5px 10px', borderRadius: '8px', background: 'var(--glass)', color: 'white', border: '1px solid var(--glass-border)', cursor: 'pointer' }}>Change Room</button>
+            </div>
           </div>
-        </div>
-        <div style={{ height: 400, overflowY: 'auto', border: '1px solid #ccc', padding: 10, marginBottom: 10 }}>
-          {messages.map((msg, i) =>
-            msg.system
-              ? <p key={i} style={{ color: 'gray', fontStyle: 'italic' }}>{msg.text}</p>
-              : (
-                <div key={msg.messageId || i} onMouseEnter={() => setHoveredMessage(msg.messageId)} onMouseLeave={() => setHoveredMessage(null)} style={{ position: 'relative', padding: '5px 8px', borderRadius: '4px', backgroundColor: msg.isBot ? '#eef2ff' : 'transparent', marginBottom: '4px' }}>
-                  <p style={{ margin: 0 }}>
-                    {msg.isBot && <span style={{ color: '#4f46e5', marginRight: '4px' }}>✦</span>}
-                    <strong style={{ color: msg.isBot ? '#4f46e5' : 'inherit' }}>{msg.username}</strong>: {msg.text}
-                  </p>
-                  {hoveredMessage === msg.messageId && (
-                    <div style={{ position: 'absolute', top: -20, left: 50, background: 'white', border: '1px solid #ccc', borderRadius: 20, padding: '2px 8px', display: 'flex', gap: 5, zIndex: 10 }}>
-                      {emojis.map(emoji => (
-                        <span key={emoji} onClick={() => reactToMessage(msg.messageId, emoji)} style={{ cursor: 'pointer' }}>{emoji}</span>
+
+          <div className="chat-body" style={{ flex: 1, padding: '20px' }}>
+            {messages.map((msg, i) =>
+              msg.system
+                ? <p key={i} style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', margin: '10px 0', fontStyle: 'italic' }}>{msg.text}</p>
+                : (
+                  <div 
+                    key={msg.messageId || i} 
+                    className="message" 
+                    id={msg.username === username ? 'you' : 'other'}
+                    onMouseEnter={() => setHoveredMessage(msg.messageId)} 
+                    onMouseLeave={() => setHoveredMessage(null)}
+                  >
+                    <div className="message-content">
+                      <p style={{ margin: 0 }}>
+                        {msg.isBot && <span style={{ color: '#818cf8', marginRight: '4px' }}>✦</span>}
+                        <strong style={{ fontSize: '0.75rem', display: 'block', marginBottom: '2px', opacity: 0.8 }}>{msg.username}</strong>
+                        {msg.text}
+                      </p>
+                    </div>
+                    
+                    <div className="message-meta">
+                      <span>{new Date(msg.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                    </div>
+
+                    {hoveredMessage === msg.messageId && (
+                      <div style={{ position: 'absolute', top: -30, [msg.username === username ? 'right' : 'left']: 0, background: 'var(--bg-card)', border: '1px solid var(--glass-border)', borderRadius: 20, padding: '4px 10px', display: 'flex', gap: 8, zIndex: 10, boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
+                        {emojis.map(emoji => (
+                          <span key={emoji} onClick={() => reactToMessage(msg.messageId, emoji)} style={{ cursor: 'pointer', transition: 'transform 0.2s' }} onMouseOver={e => e.target.style.transform = 'scale(1.2)'} onMouseOut={e => e.target.style.transform = 'scale(1)'}>{emoji}</span>
+                        ))}
+                      </div>
+                    )}
+                    
+                    <div style={{ display: 'flex', gap: 5, marginTop: 4 }}>
+                      {Object.entries(msg.reactions || {}).map(([emoji, users]) => (
+                        <span key={emoji} onClick={() => reactToMessage(msg.messageId, emoji)} style={{ fontSize: '0.7rem', background: users.includes(username) ? 'rgba(99, 102, 241, 0.2)' : 'var(--glass)', border: '1px solid var(--glass-border)', padding: '2px 8px', borderRadius: 10, cursor: 'pointer', color: 'var(--text-main)' }}>
+                          {emoji} {users.length}
+                        </span>
                       ))}
                     </div>
-                  )}
-                  <div style={{ display: 'flex', gap: 5, marginTop: 2 }}>
-                    {Object.entries(msg.reactions || {}).map(([emoji, users]) => (
-                      <span key={emoji} onClick={() => reactToMessage(msg.messageId, emoji)} style={{ fontSize: '0.7rem', background: users.includes(username) ? '#e3f2fd' : '#f5f5f5', padding: '2px 6px', borderRadius: 10, cursor: 'pointer' }}>
-                        {emoji} {users.length}
-                      </span>
-                    ))}
                   </div>
-                </div>
-              )
-          )}
-          <div ref={bottomRef} />
-        </div>
-        <div style={{ height: 20 }}>{typingUsers.length > 0 && <p style={{ fontSize: '0.8rem', fontStyle: 'italic' }}>{typingUsers.join(', ')} typing...</p>}</div>
-        <SmartReply recentMessages={last10Messages} onSelect={(s) => setInput(s)} />
-        <input value={input} onChange={handleInputChange} onKeyDown={e => e.key === 'Enter' && sendMessage()} placeholder="Group message..." style={{ padding: 8, width: '70%' }} />
-        <button onClick={sendMessage}>Send</button>
-        <p style={{ fontSize: '0.75rem', color: '#6b7280', margin: '4px 0 0 0' }}>Tip: type @bot followed by your question to ask AI</p>
-      </div>
-
-      <div style={{ flex: 1, borderLeft: '1px solid #eee', paddingLeft: 20 }}>
-        <h4>Online Users</h4>
-        <ul style={{ listStyle: 'none', padding: 0 }}>
-          {onlineUsers.map(user => (
-            <li key={user.id} onClick={() => openPrivateChat(user)} style={{ cursor: 'pointer', color: user.id === socket.id ? 'black' : 'blue', marginBottom: 5 }}>
-              {user.username} {user.id === socket.id && '(You)'}
-              {notifications[user.id] > 0 && <span style={{ background: 'red', color: 'white', borderRadius: '50%', padding: '2px 6px', marginLeft: 10, fontSize: 10 }}>{notifications[user.id]}</span>}
-            </li>
-          ))}
-        </ul>
-
-        {selectedUser && (
-          <div style={{ marginTop: 20, border: '1px solid #999', padding: 10 }}>
-            <h5>Chat with {selectedUser.username}</h5>
-            <div style={{ height: 200, overflowY: 'auto', background: '#f9f9f9', padding: 5, marginBottom: 5 }}>
-              {(privateChats[selectedUser.id] || []).map((msg, i) => (
-                <p key={i} style={{ margin: '2px 0', fontSize: '0.9rem' }}>
-                  <strong>{msg.from}:</strong> {msg.text}
-                </p>
-              ))}
-              <div ref={dmBottomRef} />
-            </div>
-            <input value={dmInput} onChange={e => setDmInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendPrivateMessage()} placeholder="Direct message..." style={{ width: '100%', padding: 5, boxSizing: 'border-box' }} />
+                )
+            )}
+            <div ref={bottomRef} />
           </div>
-        )}
+
+          <div style={{ padding: '0 20px', height: 20 }}>
+            {typingUsers.length > 0 && <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>{typingUsers.join(', ')} typing...</p>}
+          </div>
+
+          <div className="chat-footer" style={{ flexDirection: 'column', gap: '10px' }}>
+            <SmartReply recentMessages={last10Messages} onSelect={(s) => setInput(s)} />
+            <div style={{ display: 'flex', gap: '10px', width: '100%' }}>
+              <input 
+                value={input} 
+                onChange={handleInputChange} 
+                onKeyDown={e => e.key === 'Enter' && sendMessage()} 
+                placeholder="Group message..." 
+              />
+              <button onClick={sendMessage}>Send</button>
+            </div>
+            <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'center' }}>Tip: type @bot followed by your question to ask AI</p>
+          </div>
+        </div>
+
+        {/* Sidebar */}
+        <div style={{ flex: 0.8, background: 'rgba(255, 255, 255, 0.02)', padding: '20px', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
+          <h4 style={{ marginBottom: '1.5rem', color: 'var(--text-main)', borderBottom: '1px solid var(--glass-border)', paddingBottom: '10px' }}>Online Users</h4>
+          <ul style={{ listStyle: 'none', padding: 0 }}>
+            {onlineUsers.map(user => (
+              <li 
+                key={user.id} 
+                onClick={() => openPrivateChat(user)} 
+                style={{ 
+                  cursor: 'pointer', 
+                  padding: '10px', 
+                  borderRadius: '12px', 
+                  background: selectedUser?.id === user.id ? 'var(--glass)' : 'transparent',
+                  color: user.id === socket.id ? 'var(--primary)' : 'var(--text-main)', 
+                  marginBottom: 8,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  transition: 'all 0.2s'
+                }}
+                onMouseOver={e => e.currentTarget.style.background = 'var(--glass)'}
+                onMouseOut={e => e.currentTarget.style.background = selectedUser?.id === user.id ? 'var(--glass)' : 'transparent'}
+              >
+                <span>
+                  {user.username} {user.id === socket.id && <small style={{ opacity: 0.6 }}>(You)</small>}
+                </span>
+                {notifications[user.id] > 0 && <span style={{ background: '#ef4444', color: 'white', borderRadius: '10px', padding: '2px 8px', fontSize: 10, fontWeight: 'bold' }}>{notifications[user.id]}</span>}
+              </li>
+            ))}
+          </ul>
+
+          {selectedUser && (
+            <DMPanel 
+              socket={socket} 
+              recipientId={selectedUser.id} 
+              recipientName={selectedUser.username} 
+              username={username} 
+              messages={privateChats} 
+              setMessages={setPrivateChats} 
+            />
+          )}
+        </div>
       </div>
     </div>
   );
