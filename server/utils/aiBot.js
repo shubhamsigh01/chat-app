@@ -1,60 +1,95 @@
-/**
- * Helper to interact with the Anthropic API for the @bot feature.
- */
+require('dotenv').config(); // safety net in case called standalone
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+
+if (!process.env.GEMINI_API_KEY) {
+  console.error("❌ aiBot.js: GEMINI_API_KEY is not set.");
+}
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 /**
- * getBotReply calls the Anthropic API to generate a reply for an @bot question.
- * @param {string} userQuestion - The question asked by the user after the @bot prefix.
- * @param {Array<string>} recentContext - The last 5 messages in the room as plain strings for context.
- * @returns {Promise<string>} - The bot's reply.
+ * Handles @bot messages and returns an AI-generated response.
+ * @param {string} message - The raw chat message text
+ * @param {Array}  history - Recent messages [{username, text}] for context
+ * @returns {string|null} AI response string, or null if not a @bot message
  */
-async function getBotReply(userQuestion, recentContext) {
-  const apiKey = process.env.Gemini_API_KEY || process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    console.error('Gemini API key is not set');
-    return "I'm sorry, my AI features are currently unconfigured.";
+async function handleBotMessage(message, history = []) {
+  const botRegex = /^@bot\s+/i;
+
+  if (!botRegex.test(message.trim())) return null;
+
+  const userQuestion = message.replace(botRegex, "").trim();
+
+  if (!userQuestion) {
+    return "Hey! Ask me something after @bot 😊";
   }
 
-  const systemPrompt = "You are Orbit, a friendly AI assistant inside a chat room. Keep replies short (1-3 sentences), helpful, and conversational. You may use the recent chat context to give better answers.";
-  const userContent = "Recent context:\n" + recentContext.join("\n") + "\n\nUser asked: " + userQuestion;
+  console.log(`🤖 [Bot] Question received: "${userQuestion}"`);
 
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: systemPrompt }]
-        },
-        contents: [{
-          role: "user",
-          parts: [{ text: userContent }]
-        }],
-        generationConfig: {
-          maxOutputTokens: 200
+    let model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    const contextBlock =
+      history.length > 0
+        ? `Recent chat context:\n${history
+            .slice(-10)
+            .map((m) => `${m.username}: ${m.text}`)
+            .join("\n")}\n\n`
+        : "";
+
+    const prompt = `${contextBlock}A user in a group chat asked: "${userQuestion}"\nAnswer helpfully and concisely in 2-4 sentences.`;
+
+    console.log(`🤖 [Bot] Calling Gemini API...`);
+    
+    let result;
+    try {
+      result = await model.generateContent(prompt);
+    } catch (e) {
+      if (e.status === 404 || e.message.includes("not found")) {
+        console.log("🤖 [Bot] gemini-2.5-flash not found, falling back to gemini-1.5-flash...");
+        try {
+          model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+          result = await model.generateContent(prompt);
+        } catch (err2) {
+          console.log("🤖 [Bot] gemini-1.5-flash not found, falling back to gemini-pro...");
+          model = genAI.getGenerativeModel({ model: "gemini-pro" });
+          result = await model.generateContent(prompt);
         }
-      })
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`Gemini API error in getBotReply: ${response.status} ${errorBody}`);
-      return "I encountered an error trying to process your request. Please try again later.";
+      } else {
+        throw e;
+      }
     }
 
-    const data = await response.json();
-    if (data.candidates && data.candidates.length > 0) {
-      return data.candidates[0].content.parts[0].text;
+    const response = await result.response;
+    const text = response.text();
+
+    console.log(`✅ [Bot] Gemini responded successfully (${text.length} chars)`);
+    return text;
+
+  } catch (err) {
+    // Log the FULL error for debugging
+    console.error("❌ [Bot] Gemini API Error:");
+    console.error("  Message:", err.message);
+    console.error("  Status:", err.status || "N/A");
+    console.error("  Error details:", JSON.stringify(err?.errorDetails || {}, null, 2));
+
+    // Return specific user-facing messages based on error type
+    if (err.message?.includes("API_KEY") || err.message?.includes("API key") || err.status === 400) {
+      return "⚠️ Bot config error: Invalid API key. Contact admin.";
     }
-    return "I'm not sure how to respond to that.";
-  } catch (error) {
-    console.error('Error in getBotReply:', error);
-    return "I am currently unavailable.";
+    if (err.message?.includes("quota") || err.status === 429) {
+      return "⚠️ Bot is rate-limited. Please wait a moment and try again.";
+    }
+    if (err.status === 404) {
+      return "⚠️ Bot model not found. Contact admin to update the model name.";
+    }
+    if (err.message?.includes("network") || err.message?.includes("fetch")) {
+      return "⚠️ Bot can't reach the AI service right now. Check server internet access.";
+    }
+
+    // Temporarily expose the real error message to help with debugging
+    return `⚠️ Bot error: ${err.message || "Unknown error — check server logs."}`;
   }
 }
 
-module.exports = {
-  getBotReply
-};
+module.exports = { handleBotMessage };

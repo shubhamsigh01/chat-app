@@ -1,4 +1,17 @@
 require('dotenv').config();
+// Required environment variables:
+// GEMINI_API_KEY=AIza...       (must start with AIza, no spaces around =)
+// MONGODB_URI=mongodb+srv://...
+// JWT_SECRET=your_secret_here
+// PORT=5000
+
+// Startup environment validation
+if (!process.env.GEMINI_API_KEY) {
+  console.error("❌ FATAL: GEMINI_API_KEY is missing from .env — AI features will not work.");
+} else {
+  console.log("✅ GEMINI_API_KEY loaded:", process.env.GEMINI_API_KEY.slice(0, 8) + "...");
+}
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -9,7 +22,11 @@ const Message = require('./models/Message');
 const Room = require('./models/Room');
 const authRoutes = require('./routes/auth');
 const aiRoutes = require('./routes/ai');
-const { getBotReply } = require('./utils/aiBot');
+const { handleBotMessage } = require("./utils/aiBot");
+
+// In-memory store for public keys — keyed by socket ID
+const publicKeyStore = {};
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -60,45 +77,66 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_message', async ({ room, text }) => {
-    const username = socket.user.username;
-    const messageData = { 
-      messageId: Date.now().toString() + Math.random().toString(36).substr(2, 5),
-      room, username, text, time: new Date().toISOString(), reactions: {}
-    };
+    try {
+      const username = socket.user.username;
+      const messageData = { 
+        messageId: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+        room, username, text, time: new Date().toISOString(), reactions: {}
+      };
 
-    const newMessage = new Message(messageData);
-    await newMessage.save();
-    io.to(room).emit('receive_message', messageData);
+      const newMessage = new Message(messageData);
+      await newMessage.save();
+      io.to(room).emit('receive_message', messageData);
 
-    // AI bot intercept
-    if (text.trim().toLowerCase().startsWith('@bot')) {
-      const question = text.trim().substring(4).trim();
-      if (question) {
-        // Get last 5 messages for context
-        const history = await Message.find({ room }).sort({ _id: -1 }).limit(5);
-        const context = history.reverse().map(m => `${m.username}: ${m.text}`);
-        
-        const botReply = await getBotReply(question, context);
-        
+      // STEP 5: AI bot interaction
+      const history = await getRecentMessages(room);
+      const botResponse = await handleBotMessage(text, history);
+
+      if (botResponse) {
         const botMessageData = {
-          messageId: Date.now().toString() + Math.random().toString(36).substr(2, 5),
+          messageId: Date.now().toString() + "-bot-" + Math.random().toString(36).substr(2, 5),
+          text: botResponse,
+          username: "🤖 Orbit Bot",
           room,
-          username: "Orbit AI",
-          text: botReply,
           time: new Date().toISOString(),
-          reactions: {},
-          isBot: true
+          isBot: true,
         };
-        
-        io.to(room).emit('receive_message', botMessageData);
+
+        const botMessage = await Message.create(botMessageData);
+
+        setTimeout(() => {
+          // Using existing event name 'receive_message' for consistency with client
+          io.to(room).emit("receive_message", botMessageData);
+        }, 600);
       }
+    } catch (error) {
+      console.error("Socket send_message error:", error);
     }
   });
 
-  socket.on('private_message', ({ to, text }) => {
-    const from = socket.user.username;
-    const message = { from, text, time: new Date().toISOString() };
-    io.to(to).emit('receive_private_message', { ...message, fromId: socket.id });
+  socket.on('register-public-key', ({ publicKey }) => {
+    publicKeyStore[socket.id] = publicKey;
+  });
+
+  socket.on('request-public-key', ({ targetUserId }) => {
+    const key = publicKeyStore[targetUserId];
+    if (key) {
+      socket.emit('receive-public-key', {
+        fromUserId: targetUserId,
+        publicKey: key
+      });
+    }
+  });
+
+  socket.on('private_message', ({ to, iv, ciphertext }) => {
+    io.to(to).emit('receive_private_message', {
+      from: socket.user.username,
+      fromId: socket.id,
+      fromUserId: socket.id, // For compatibility with E2E instructions
+      iv,
+      ciphertext,
+      timestamp: new Date()
+    });
   });
 
   socket.on('react_message', async ({ room, messageId, emoji }) => {
@@ -149,8 +187,21 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     delete onlineUsers[socket.id];
+    delete publicKeyStore[socket.id];
   });
 });
+
+async function getRecentMessages(room) {
+  try {
+    return await Message.find({ room })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+  } catch (err) {
+    console.error("Failed to fetch message history:", err.message);
+    return [];
+  }
+}
 
 function getOnlineUsers(room) {
   const socketsInRoom = io.sockets.adapter.rooms.get(room) || new Set();

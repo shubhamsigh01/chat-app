@@ -6,7 +6,7 @@ import React, { useState, useEffect } from 'react';
  */
 export default function SummaryModal({ messages, onClose }) {
   const [summary, setSummary] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -21,22 +21,24 @@ export default function SummaryModal({ messages, onClose }) {
     const fetchSummary = async () => {
       setLoading(true);
       setError(null);
+      setSummary("");
+
       try {
-        const response = await fetch('/api/ai/summarize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages })
+        const res = await fetch("/api/ai/summarize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages }),
         });
-        
-        if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error || 'Summarization failed');
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data.error || "Summarization failed");
         }
-        
-        const data = await response.json();
-        setSummary(data.summary || 'Could not generate summary.');
+
+        setSummary(data.summary);
       } catch (err) {
-        console.error('Error fetching summary:', err);
+        console.error("Summarize error:", err.message);
         setError(err.message);
       } finally {
         setLoading(false);
@@ -103,6 +105,12 @@ export default function SummaryModal({ messages, onClose }) {
         
         <h2 style={{ marginTop: 0, marginBottom: '20px', fontSize: '1.75rem', fontWeight: 700, background: 'linear-gradient(to right, #818cf8, #c084fc)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Room Summary</h2>
         
+        {error && (
+          <div style={{ color: "#f87171", marginTop: "8px", fontSize: "14px", marginBottom: "16px" }}>
+            ⚠️ {error}
+          </div>
+        )}
+
         {loading ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100px' }}>
             <div style={{
