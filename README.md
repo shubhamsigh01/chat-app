@@ -28,7 +28,7 @@ Orbit Chat is a state-of-the-art chat application built with a modern tech stack
 
 ### Smart AI Integration 🧠
 - **Orbit Bot (@bot)**: An interactive AI chatbot integrated directly into the chat.
-*(Powered by Google's Gemini API natively via fetch, no external SDKs)*
+*(Powered by Google's Gemini AI via the official SDK)*
 
 ### UI / UX
 - **Premium Design**: Modern, responsive layout utilizing smooth glassmorphism effects.
@@ -75,16 +75,16 @@ npm install
 
 Create a `.env` file in the `server/` directory and add the following variables:
 ```env
-PORT=3001
+PORT=5000
 MONGODB_URI=your_mongodb_connection_string
 JWT_SECRET=your_jwt_secret_key
-Gemini_API_KEY=your_gemini_api_key
+GEMINI_API_KEY=your_gemini_api_key
 ```
 
 Start the backend server:
 ```bash
 npm start # or node index.js
-# The server will run on http://localhost:3001
+# The server will run on http://localhost:5000
 ```
 
 ### 3. Frontend Setup
